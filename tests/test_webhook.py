@@ -1,6 +1,12 @@
 import hashlib
 import hmac
 
+from analytics import (
+    get_session_metrics,
+    poll_devin_session_status,
+    record_session,
+    render_dashboard,
+)
 from app import extract_commits, verify_signature
 from webhook import build_devin_session_payload, create_devin_session
 
@@ -113,3 +119,116 @@ def test_create_devin_session_uses_v3_default_when_base_url_not_set(monkeypatch)
     create_devin_session({"repository": "demo/repo", "branch": "main", "messages": ["x"]})
 
     assert captured["url"] == "https://api.devin.ai/v3/organizations/demo-org/sessions"
+
+
+def test_record_session_metrics_track_active_completed_and_throughput(tmp_path):
+    db_path = tmp_path / "metrics.db"
+
+    record_session(
+        db_path,
+        session_id="sess-1",
+        repository="acme/demo",
+        branch="main",
+        head_commit="abc123",
+        commit_count=1,
+        status="created",
+    )
+    record_session(
+        db_path,
+        session_id="sess-2",
+        repository="acme/demo",
+        branch="main",
+        head_commit="def456",
+        commit_count=2,
+        status="completed",
+        result="success",
+    )
+    record_session(
+        db_path,
+        session_id="sess-3",
+        repository="acme/other",
+        branch="dev",
+        head_commit="ghi789",
+        commit_count=1,
+        status="failed",
+        result="error",
+    )
+
+    metrics = get_session_metrics(db_path)
+
+    assert metrics["total"] == 3
+    assert metrics["active"] == 1
+    assert metrics["completed"] == 1
+    assert metrics["failed"] == 1
+    assert metrics["by_status"]["created"] == 1
+    assert metrics["by_status"]["completed"] == 1
+    assert metrics["by_status"]["failed"] == 1
+    assert metrics["throughput_last_7_days"] >= 3
+    assert metrics["success_rate"] == 0.3333333333333333
+    assert metrics["by_repository"]["acme/demo"]["total"] == 2
+    assert metrics["by_repository"]["acme/demo"]["completed"] == 1
+    assert metrics["by_repository"]["acme/other"]["failed"] == 1
+    assert "sess-1" in metrics["active_sessions"]
+    assert "sess-2" not in metrics["active_sessions"]
+
+
+def test_dashboard_html_contains_key_overview_and_repo_breakdown(tmp_path):
+    db_path = tmp_path / "metrics.db"
+
+    record_session(
+        db_path,
+        session_id="sess-1",
+        repository="acme/demo",
+        branch="main",
+        head_commit="abc123",
+        commit_count=1,
+        status="completed",
+        result="success",
+    )
+
+    html = render_dashboard(db_path)
+
+    assert "Devin Session Dashboard" in html
+    assert "Success rate" in html
+    assert "Total sessions" in html
+    assert "setInterval" in html
+    assert "poll-status" in html
+
+
+def test_poll_devin_session_status_updates_status_and_result(tmp_path, monkeypatch):
+    db_path = tmp_path / "metrics.db"
+    record_session(
+        db_path,
+        session_id="sess-10",
+        repository="acme/demo",
+        branch="main",
+        head_commit="ccc",
+        commit_count=1,
+        status="created",
+        result=None,
+    )
+
+    class DummyResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, headers=None, timeout=None):
+        return DummyResponse({"status": "completed", "result": "success"})
+
+    monkeypatch.setenv("DEVIN_API_KEY", "demo-key")
+    monkeypatch.setenv("DEVIN_ORG_ID", "demo-org")
+    monkeypatch.setattr("analytics.requests.get", fake_get)
+
+    result = poll_devin_session_status(db_path, "sess-10")
+
+    assert result["status"] == "completed"
+    assert result["result"] == "success"
+    metrics = get_session_metrics(db_path)
+    assert metrics["by_status"]["completed"] == 1
+    assert metrics["success_rate"] == 1.0

@@ -48,6 +48,32 @@ python webhook.py
 
 Then expose the local service with ngrok and configure GitHub webhook settings.
 
+Or use the provided startup script:
+
+```bash
+./run.sh
+```
+
+## Dashboard usage
+
+The webhook service exposes a real-time dashboard for monitoring Devin sessions:
+
+**Dashboard endpoint:** `http://localhost:5000/dashboard`
+
+The dashboard displays:
+- **Overview metrics:** Total sessions, active count, completed, failed, and success rate
+- **Repository breakdown:** Per-repository session counts and status distribution
+- **Auto-refresh:** The dashboard automatically polls active sessions every 15 seconds and reloads
+- **Active session tracking:** Lists all sessions currently in "created" or "running" status
+
+**Metrics endpoint (JSON):** `http://localhost:5000/metrics`
+
+Returns aggregated session metrics and list of active session IDs for programmatic access.
+
+**Poll session status:** `http://localhost:5000/poll-status/<session_id>`
+
+Fetches the current status of a specific Devin session from the API and updates the local ledger.
+
 ## Example GitHub push payload
 
 ```json
