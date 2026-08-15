@@ -2,6 +2,7 @@ import hashlib
 import hmac
 
 from app import extract_commits, verify_signature
+from webhook import build_devin_session_payload, create_devin_session
 
 
 def test_verify_signature_accepts_valid_payload():
@@ -36,3 +37,79 @@ def test_extract_commits_reads_push_event_details():
     assert event["head_commit"] == "abc123"
     assert event["commit_count"] == 2
     assert event["messages"] == ["first", "second"]
+
+
+def test_build_devin_session_payload_contains_repo_and_branch(monkeypatch):
+    monkeypatch.setenv("DEVIN_PLAYBOOK_ID", "playbook-123")
+    summary = {
+        "repository": "acme/demo",
+        "branch": "main",
+        "messages": ["feat: add webhook", "fix: cleanup"],
+    }
+
+    payload = build_devin_session_payload(summary)
+
+    assert payload["name"] == "Webhook commit - acme/demo:main"
+    assert "acme/demo" in payload["prompt"]
+    assert "main" in payload["prompt"]
+    assert "feat: add webhook" in payload["prompt"]
+    assert payload["playbook_id"] == "playbook-123"
+
+
+def test_create_devin_session_calls_expected_endpoint(monkeypatch):
+    captured = {}
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"id": "session-123"}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return DummyResponse()
+
+    monkeypatch.setenv("DEVIN_API_KEY", "demo-key")
+    monkeypatch.setenv("DEVIN_ORG_ID", "demo-org")
+    monkeypatch.setattr("webhook.requests.post", fake_post)
+
+    summary = {
+        "repository": "acme/demo",
+        "branch": "main",
+        "messages": ["feat: add webhook"],
+    }
+
+    result = create_devin_session(summary)
+
+    assert result == {"id": "session-123"}
+    assert captured["url"] == "https://api.devin.ai/v3/organizations/demo-org/sessions"
+    assert captured["headers"]["Authorization"] == "Bearer demo-key"
+    assert captured["json"]["name"] == "Webhook commit - acme/demo:main"
+
+
+def test_create_devin_session_uses_v3_default_when_base_url_not_set(monkeypatch):
+    captured = {}
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"id": "session-456"}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        return DummyResponse()
+
+    monkeypatch.delenv("DEVIN_API_BASE_URL", raising=False)
+    monkeypatch.setenv("DEVIN_API_KEY", "demo-key")
+    monkeypatch.setenv("DEVIN_ORG_ID", "demo-org")
+    monkeypatch.setattr("webhook.requests.post", fake_post)
+
+    create_devin_session({"repository": "demo/repo", "branch": "main", "messages": ["x"]})
+
+    assert captured["url"] == "https://api.devin.ai/v3/organizations/demo-org/sessions"
