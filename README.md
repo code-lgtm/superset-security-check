@@ -19,6 +19,7 @@ Detailed docs live in [docs/README.md](docs/README.md), covering the
 ## Project structure
 
 - app.py: shared validation and payload parsing helpers
+- Dockerfile, .dockerignore, docker-compose.yml: container build and local container run
 - webhook.py: Flask webhook endpoint and Devin session integration
 - tests/test_webhook.py: regression tests for signature, parsing, and Devin payload generation
 - .env.example: sample environment variables
@@ -36,7 +37,7 @@ WEBHOOK_SECRET=your-github-webhook-secret
 DEVIN_API_KEY=your-devin-api-key
 DEVIN_ORG_ID=your-devin-organization-id
 DEVIN_PLAYBOOK_ID=your-devin-playbook-id
-DEVIN_API_BASE_URL=https://api.devin.ai/v1
+DEVIN_API_BASE_URL=https://api.devin.ai/v3
 PORT=5000
 ```
 
@@ -59,6 +60,115 @@ Or use the provided startup script:
 ```bash
 ./run.sh
 ```
+
+## Run with Docker
+
+Build the image and run it with your local environment file:
+
+```bash
+docker build -t superset-security-check .
+docker run --env-file .env -p 5000:5000 superset-security-check
+```
+
+The container runs gunicorn against `webhook:app` and binds to `0.0.0.0:$PORT`
+(`PORT` defaults to 5000), so the same image works locally and on Cloud Run.
+To publish on a different host port, map it explicitly, for example
+`docker run --env-file .env -e PORT=8080 -p 5000:8080 superset-security-check`.
+
+Or use Docker Compose, which builds the image, loads `.env`, and keeps the SQLite
+ledger in a named volume so local session history survives container restarts:
+
+```bash
+docker compose up --build
+```
+
+## Deploy to Google Cloud Run
+
+Cloud Run builds on the same image. It provides the public HTTPS URL and injects
+`PORT=8080` automatically, so do not hardcode a port.
+
+1. Set your project and enable the required APIs:
+
+   ```bash
+   gcloud config set project PROJECT_ID
+   gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
+   ```
+
+2. Build and push the image. Either use Cloud Build directly:
+
+   ```bash
+   gcloud builds submit --tag gcr.io/PROJECT_ID/superset-security-check
+   ```
+
+   Or push to Artifact Registry:
+
+   ```bash
+   gcloud artifacts repositories create webhooks --repository-format=docker --location=us-central1
+   gcloud builds submit --tag us-central1-docker.pkg.dev/PROJECT_ID/webhooks/superset-security-check
+   ```
+
+3. Deploy the service:
+
+   ```bash
+   gcloud run deploy superset-security-check \
+     --image gcr.io/PROJECT_ID/superset-security-check \
+     --region us-central1 \
+     --platform managed \
+     --allow-unauthenticated \
+     --set-env-vars WEBHOOK_SECRET=your-github-webhook-secret,DEVIN_API_KEY=your-devin-api-key,DEVIN_ORG_ID=your-devin-organization-id,DEVIN_PLAYBOOK_ID=your-devin-playbook-id,DEVIN_API_BASE_URL=https://api.devin.ai/v3
+   ```
+
+   The command prints the service URL, for example
+   `https://superset-security-check-xxxxxxx-uc.a.run.app`. Use that host when
+   configuring the GitHub webhook.
+
+4. Prefer Secret Manager over plaintext env vars for `WEBHOOK_SECRET` and
+   `DEVIN_API_KEY`:
+
+   ```bash
+   printf '%s' 'your-devin-api-key' | gcloud secrets create DEVIN_API_KEY --data-file=-
+   gcloud run deploy superset-security-check \
+     --image gcr.io/PROJECT_ID/superset-security-check \
+     --region us-central1 \
+     --allow-unauthenticated \
+     --set-secrets DEVIN_API_KEY=DEVIN_API_KEY:latest,WEBHOOK_SECRET=WEBHOOK_SECRET:latest \
+     --set-env-vars DEVIN_ORG_ID=your-devin-organization-id,DEVIN_PLAYBOOK_ID=your-devin-playbook-id,DEVIN_API_BASE_URL=https://api.devin.ai/v3
+   ```
+
+### Session ledger persistence
+
+The session ledger is a SQLite file at `SESSION_DB_PATH` (default `sessions.db`),
+which lives on the container's ephemeral filesystem. On Cloud Run it is lost when
+an instance is recycled and is not shared between instances, so the dashboard and
+`/metrics` will only reflect sessions recorded by the instance that served them.
+Either accept that ephemerality (the dashboard stays useful for recent activity)
+or point the service at a persistent store, for example a Cloud Storage FUSE
+volume mount for the SQLite file, or a managed database if you adapt
+`analytics.py`. Locally, `docker compose` already mounts a volume for it.
+
+## GitHub setup: connect a target repository to the webhook
+
+1. Choose the target GitHub repository whose pushes should trigger Devin sessions.
+2. Generate a strong webhook secret and set it as `WEBHOOK_SECRET` for the
+   service. It must match exactly what GitHub is configured to send:
+
+   ```bash
+   openssl rand -hex 32
+   ```
+
+3. Deploy the service so it has a public HTTPS URL — either Cloud Run (see above)
+   or Docker locally plus a tunnel (`ngrok http 5000`).
+4. In the target repository, go to Settings → Webhooks → Add webhook.
+5. Set Payload URL to `https://<your-host>/webhook/commit`, Content type to
+   `application/json`, and Secret to the same `WEBHOOK_SECRET` value.
+6. Under "Which events would you like to trigger this webhook?", choose
+   "Just the push event" — the handler processes push payloads at
+   `/webhook/commit`.
+7. Save the webhook. GitHub immediately sends a ping; check the "Recent
+   Deliveries" tab for the response, and confirm the service logs and
+   `https://<your-host>/dashboard` are reachable.
+8. Push a commit to the target repository and confirm a Devin session is created
+   and shows up on the dashboard.
 
 ## Dashboard usage
 
