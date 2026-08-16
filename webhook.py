@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 import requests
@@ -15,15 +16,20 @@ def build_devin_session_payload(summary: Dict[str, Any]) -> Dict[str, Any]:
     branch = summary.get("branch", "unknown")
     messages = summary.get("messages", []) or []
     playbook_id = os.environ.get("DEVIN_PLAYBOOK_ID", "")
-    
-    prompt = (
-        "Run security review of https://github.com/code-lgtm/superset/tree/master/superset/daos"
-        "(branch: master). Deliverable: security-review.md report and PRs."
-    )
+
+    prompt_parts = [
+        f"Repository: {repository}",
+        f"Branch: {branch}",
+        "Recent commit messages:",
+    ]
+    if messages:
+        prompt_parts.extend(f"- {message}" for message in messages)
+    else:
+        prompt_parts.append("No commit messages provided.")
 
     payload = {
         "name": f"Webhook commit - {repository}:{branch}",
-        "prompt": prompt,
+        "prompt": "\n".join(prompt_parts),
     }
     if playbook_id:
         payload["playbook_id"] = playbook_id
@@ -75,10 +81,49 @@ def dashboard() -> Any:
 def poll_status(session_id: str) -> Any:
     db_path = os.environ.get("SESSION_DB_PATH", "sessions.db")
     try:
+        print(f"[ROUTE /poll-status] Polling session: {session_id}")
         payload = poll_devin_session_status(db_path, session_id)
+        print(f"[ROUTE /poll-status] Result: {payload}")
         return jsonify(payload)
     except Exception as exc:  # pragma: no cover - defensive runtime handling
-        return jsonify({"error": str(exc)}), 500
+        error_msg = str(exc)
+        print(f"[ROUTE /poll-status] ERROR: {error_msg}")
+        return jsonify({"error": error_msg}), 500
+
+
+@app.route("/debug/session/<session_id>", methods=["GET"])
+def debug_session(session_id: str) -> Any:
+    """Raw API response for debugging polling issues."""
+    api_key = os.environ.get("DEVIN_API_KEY", "")
+    org_id = os.environ.get("DEVIN_ORG_ID", "")
+    base_url = os.environ.get("DEVIN_API_BASE_URL", "https://api.devin.ai/v3")
+
+    if not api_key or not org_id:
+        return jsonify({"error": "DEVIN_API_KEY or DEVIN_ORG_ID not configured"}), 400
+
+    url = f"{base_url}/organizations/{org_id}/sessions/{session_id}"
+    try:
+        response = requests.get(
+            url,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        return jsonify({
+            "url": url,
+            "status_code": response.status_code,
+            "api_response": response.json(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as exc:
+        return jsonify({
+            "error": str(exc),
+            "url": url,
+            "type": type(exc).__name__,
+        }), 500
 
 
 @app.route("/webhook/commit", methods=["POST"])
