@@ -16,14 +16,6 @@ Detailed docs live in [docs/README.md](docs/README.md), covering the
 [architecture](docs/architecture.md), [configuration](docs/configuration.md), and the
 [dashboard and metrics endpoints](docs/dashboard.md).
 
-## Project structure
-
-- app.py: shared validation and payload parsing helpers
-- Dockerfile, .dockerignore, docker-compose.yml: container build and local container run
-- webhook.py: Flask webhook endpoint and Devin session integration
-- tests/test_webhook.py: regression tests for signature, parsing, and Devin payload generation
-- .env.example: sample environment variables
-
 ## Environment variables
 
 Copy [.env.example](.env.example) to `.env` and fill in your values:
@@ -195,25 +187,6 @@ Returns aggregated session metrics and list of active session IDs for programmat
 **Poll session status:** `http://localhost:5000/poll-status/<session_id>`
 
 Fetches the current status of a specific Devin session from the API and updates the local ledger.
-
-## Example GitHub push payload
-
-```json
-{
-  "ref": "refs/heads/main",
-  "repository": {
-    "full_name": "acme/demo"
-  },
-  "head_commit": {
-    "id": "abc123",
-    "message": "feat: add security check"
-  },
-  "commits": [
-    {"id": "abc123", "message": "feat: add security check"},
-    {"id": "def456", "message": "fix: update branch logic"}
-  ]
-}
-```
 
 ## Example curl test
 
