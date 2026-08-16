@@ -10,6 +10,12 @@ This repository is a minimal webhook template for handling commit events from a 
 - Calls the Devin API to create a session for the commit
 - Includes the optional playbook ID when configured
 
+## Documentation
+
+Detailed docs live in [docs/README.md](docs/README.md), covering the
+[architecture](docs/architecture.md), [configuration](docs/configuration.md), and the
+[dashboard and metrics endpoints](docs/dashboard.md).
+
 ## Project structure
 
 - app.py: shared validation and payload parsing helpers
