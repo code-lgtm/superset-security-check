@@ -11,62 +11,56 @@ def generate_dashboard_html(metrics):
     status_labels = list(metrics["by_status"].keys())
     status_data = list(metrics["by_status"].values())
     status_colors = {
-        "completed": "#28a745", 
-        "failed": "#dc3545", 
-        "created": "#007bff", 
-        "running": "#ffc107"
+        "finished": "#28a745",
+        "running": "#007bff",
+        "blocked": "#ffc107",
+        "expired": "#6c757d",
+        "suspended": "#6c757d",
+        "created": "#5bc0de",
     }
     status_chart_colors = [status_colors.get(s, "#6c757d") for s in status_labels]
-    
-    # Repository performance sorted by success rate
+
+    # Repository session volume, highest first
     repo_perf = sorted(
         metrics["by_repository"].items(),
-        key=lambda x: x[1]["success_rate"],
+        key=lambda x: x[1]["total"],
         reverse=True
     )
     repo_names = [r[0] for r in repo_perf]
-    repo_success_rates = [r[1]["success_rate"] * 100 for r in repo_perf]
-    
+    repo_totals = [r[1]["total"] for r in repo_perf]
+
     repo_detail_rows = ""
     for name, data in repo_perf:
-        success_rate = data["success_rate"] * 100
-        if success_rate > 80:
-            color = "green"
-        elif success_rate > 50:
-            color = "orange"
-        else:
-            color = "red"
-        
         repo_detail_rows += (
             f"<tr style='border-bottom: 1px solid #e0e0e0;'>"
             f"<td style='padding: 12px; font-weight: 500;'>{name}</td>"
             f"<td style='padding: 12px; text-align: center;'>{data['total']}</td>"
             f"<td style='padding: 12px; text-align: center; color: #007bff;'><strong>{data['active']}</strong></td>"
-            f"<td style='padding: 12px; text-align: center; color: #28a745;'>{data['completed']}</td>"
-            f"<td style='padding: 12px; text-align: center; color: #dc3545;'>{data['failed']}</td>"
-            f"<td style='padding: 12px; text-align: center;'>"
-            f"<span style='background: {color}; color: white; padding: 4px 8px; border-radius: 4px;'>{success_rate:.1f}%</span>"
-            f"</td></tr>"
+            f"<td style='padding: 12px; text-align: center; color: #ffc107;'>{data['blocked']}</td>"
+            f"<td style='padding: 12px; text-align: center; color: #28a745;'>{data['finished']}</td>"
+            f"<td style='padding: 12px; text-align: center;'>{data['branches']}</td>"
+            f"</tr>"
         )
-    
-    # Health status indicator
-    success_rate = metrics["success_rate"]
-    if success_rate > 0.8:
+
+    # Health indicator based on the share of sessions blocked or gone stale
+    total = metrics["total"]
+    attention_share = ((metrics["blocked"] + metrics["stale"]) / total) if total else 0.0
+    if attention_share < 0.2:
         health_status = "🟢 Healthy"
         health_color_rgb = "40, 167, 69"
-    elif success_rate > 0.5:
-        health_status = "🟡 Warning"
+    elif attention_share < 0.5:
+        health_status = "🟡 Needs attention"
         health_color_rgb = "255, 193, 7"
     else:
-        health_status = "🔴 Critical"
+        health_status = "🔴 Stalled"
         health_color_rgb = "220, 53, 69"
-    
-    # Format duration
-    avg_duration = metrics['avg_duration_seconds']
-    if avg_duration > 0:
-        duration_str = f"{int(avg_duration)}s"
-    else:
-        duration_str = "N/A"
+
+    def _fmt_duration(seconds: float) -> str:
+        return f"{int(seconds)}s" if seconds > 0 else "N/A"
+
+    duration_str = _fmt_duration(metrics["avg_duration_seconds"])
+    median_duration_str = _fmt_duration(metrics["median_duration_seconds"])
+    p90_duration_str = _fmt_duration(metrics["p90_duration_seconds"])
     
     # Generate JavaScript for charts
     chart_js = f"""
@@ -75,7 +69,7 @@ def generate_dashboard_html(metrics):
     const statusData = {repr(status_data)};
     const statusColors = {repr(status_chart_colors)};
     const repoNames = {repr(repo_names)};
-    const repoSuccessRates = {repr(repo_success_rates)};
+    const repoTotals = {repr(repo_totals)};
     const hourlyLabels = {repr(hourly_labels)};
     const hourlyData = {repr(hourly_data)};
     
@@ -92,21 +86,21 @@ def generate_dashboard_html(metrics):
       options: {{ responsive: true, maintainAspectRatio: true }}
     }});
     
-    // Repository Performance Chart
+    // Repository Session Volume Chart
     new Chart(document.getElementById('repoChart').getContext('2d'), {{
       type: 'bar',
       data: {{
         labels: repoNames,
         datasets: [{{
-          label: 'Success Rate (%)',
-          data: repoSuccessRates,
+          label: 'Sessions',
+          data: repoTotals,
           backgroundColor: '#007bff'
         }}]
       }},
       options: {{
         indexAxis: 'y',
         responsive: true,
-        scales: {{ x: {{ max: 100, beginAtZero: true }} }}
+        scales: {{ x: {{ beginAtZero: true }} }}
       }}
     }});
     
@@ -235,24 +229,34 @@ def generate_dashboard_html(metrics):
     <div class="container">
       <div class="metrics-grid">
         <div class="metric-card">
-          <div class="metric-label">System Health</div>
+          <div class="metric-label">Session Health</div>
           <div class="health-indicator">{health_status}</div>
-          <div class="metric-subtext">Success Rate: {metrics['success_rate']*100:.1f}%</div>
+          <div class="metric-subtext">Blocked or stale: {attention_share*100:.1f}%</div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">Total Sessions</div>
+          <div class="metric-label">Total sessions</div>
           <div class="metric-value">{metrics['total']}</div>
           <div class="metric-subtext">Active: {metrics['active']}</div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">Completed</div>
-          <div class="metric-value" style="color: #28a745;">{metrics['completed']}</div>
-          <div class="metric-subtext">Success Rate: {metrics['success_rate']*100:.1f}%</div>
+          <div class="metric-label">Session Creation</div>
+          <div class="metric-value">{metrics['creation_success_rate']*100:.1f}%</div>
+          <div class="metric-subtext">Webhook create attempts: {metrics['creation_attempts']}</div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">Failed</div>
-          <div class="metric-value" style="color: #dc3545;">{metrics['failed']}</div>
-          <div class="metric-subtext">Failure Rate (24h): {metrics['failure_rate_24h']*100:.1f}%</div>
+          <div class="metric-label">Finished</div>
+          <div class="metric-value" style="color: #28a745;">{metrics['finished']}</div>
+          <div class="metric-subtext">Terminal sessions</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Blocked (awaiting input)</div>
+          <div class="metric-value" style="color: #ffc107;">{metrics['blocked']}</div>
+          <div class="metric-subtext">Waiting on a human</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Stale/Expired</div>
+          <div class="metric-value" style="color: #6c757d;">{metrics['stale']}</div>
+          <div class="metric-subtext">Expired or suspended</div>
         </div>
         <div class="metric-card">
           <div class="metric-label">Throughput (24h)</div>
@@ -260,9 +264,19 @@ def generate_dashboard_html(metrics):
           <div class="metric-subtext">7 days: {metrics['throughput_last_7_days']}</div>
         </div>
         <div class="metric-card">
+          <div class="metric-label">Adoption</div>
+          <div class="metric-value">{metrics['distinct_repositories']}</div>
+          <div class="metric-subtext">Repositories &middot; {metrics['distinct_branches']} branches</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Avg Commits/Session</div>
+          <div class="metric-value">{metrics['avg_commits_per_session']:.1f}</div>
+          <div class="metric-subtext">Total commits: {metrics['total_commits']}</div>
+        </div>
+        <div class="metric-card">
           <div class="metric-label">Avg Duration</div>
           <div class="metric-value">{duration_str}</div>
-          <div class="metric-subtext">Completed sessions</div>
+          <div class="metric-subtext">Median: {median_duration_str} &middot; p90: {p90_duration_str}</div>
         </div>
       </div>
       
@@ -272,7 +286,7 @@ def generate_dashboard_html(metrics):
           <canvas id="statusChart"></canvas>
         </div>
         <div class="chart-card">
-          <div class="chart-title">📈 Repository Performance</div>
+          <div class="chart-title">📈 Repository Session Volume</div>
           <canvas id="repoChart"></canvas>
         </div>
         <div class="chart-card" style="grid-column: 1 / -1;">
@@ -289,9 +303,9 @@ def generate_dashboard_html(metrics):
               <th>Repository</th>
               <th>Total</th>
               <th>Active</th>
-              <th>Completed</th>
-              <th>Failed</th>
-              <th>Success Rate</th>
+              <th>Blocked</th>
+              <th>Finished</th>
+              <th>Branches</th>
             </tr>
           </thead>
           <tbody>
