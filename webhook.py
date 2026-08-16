@@ -143,6 +143,10 @@ def commit_webhook() -> Any:
 
     print(f"Received webhook for {summary['repository']} on branch {summary['branch']}")
 
+    # `result` records whether *session creation* succeeded, not whether the
+    # session's task succeeded — the Sessions API never reports a task verdict.
+    # A successfully created session starts in the API status `created`; a
+    # creation failure is recorded with the local-only status `failed`.
     session_id = None
     try:
         devin_result = create_devin_session(summary)

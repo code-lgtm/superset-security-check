@@ -41,7 +41,9 @@ Devin integration:
 
 The webhook handler is deliberately fault-tolerant: if session creation fails it still
 records a row, using a synthetic `webhook-<head_commit>` session id with status `failed`,
-and returns HTTP 200 with the error under the `devin` key. Only signature verification
+and returns HTTP 200 with the error under the `devin` key. The `result` column (`success` /
+`error`) records whether *session creation* succeeded, not any task-level verdict — the
+Sessions API does not report one. Only signature verification
 failures abort the request (HTTP 401).
 
 ### `analytics.py` — persistence, metrics, polling, rendering
@@ -51,28 +53,27 @@ failures abort the request (HTTP 401).
   `status`, `result`, `created_at`, `completed_at`). It also performs an idempotent
   `ALTER TABLE ... ADD COLUMN completed_at` migration for older databases.
 - `record_session(...)` — upserts a session row (`INSERT OR REPLACE` on `session_id`) and
-  stamps `completed_at` with the current UTC time when the status is `completed` or
-  `failed`.
+  stamps `completed_at` with the current UTC time when the status is one of the terminal API
+  statuses in `TERMINAL_STATUSES` (`finished`, `expired`, `suspended`).
 - `get_session_metrics(db_path)` — reads every row and aggregates totals, per-status and
-  per-repository breakdowns, active session ids, success/failure rates, throughput windows,
-  average duration, and hourly throughput. See [dashboard.md](dashboard.md) for the field
-  list.
+  per-repository breakdowns, active/blocked/finished/stale counts, the session creation
+  success rate, adoption (distinct repositories and branches), throughput windows, duration
+  mean/median/p90, commits per session, and hourly throughput. See
+  [dashboard.md](dashboard.md) for the field list.
 - `poll_devin_session_status(db_path, session_id)` — GETs
   `<DEVIN_API_BASE_URL>/organizations/<DEVIN_ORG_ID>/sessions/<session_id>`, lowercases the
-  returned status, derives `result` from `result`/`state` (defaulting to `success` for
-  `completed` and `error` for `failed`), and writes the update back through
+  returned status, takes `result` from `result`/`state` (falling back to the stored creation
+  `result`), and writes the update back through
   `record_session`. Request failures return `{"status": "unknown", "result": "error",
   "error": ...}` instead of raising.
-- `render_dashboard(db_path)` — turns the metrics into the HTML dashboard: metric cards, a
-  Chart.js status doughnut, repository success-rate bars, an hourly throughput line chart, a
-  repository breakdown table, and the auto-refresh script.
+- `render_dashboard(db_path)` — thin wrapper that passes the metrics to
+  `generate_dashboard_html`.
 
-### `dashboard_template.py` — dashboard template support
+### `dashboard_template.py` — dashboard rendering
 
-Holds `generate_dashboard_html(metrics)`, a standalone generator for the same dashboard
-markup. It is currently not imported by `webhook.py` or `analytics.py`; `render_dashboard`
-contains the version that actually serves `/dashboard`. Treat it as the template/staging
-copy, and keep the two in sync (or collapse them) when changing the dashboard.
+Holds `generate_dashboard_html(metrics)`, the single source of the dashboard markup: metric
+cards, a Chart.js status doughnut, repository session-volume bars, an hourly throughput line
+chart, a repository breakdown table, and the auto-refresh script.
 
 ### `tests/test_webhook.py`
 

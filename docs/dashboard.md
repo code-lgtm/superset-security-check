@@ -5,17 +5,18 @@ same aggregation function, `get_session_metrics` in `analytics.py`.
 
 ## `/dashboard` (HTML)
 
-`GET /dashboard` returns the server-rendered page produced by `render_dashboard`:
+`GET /dashboard` returns the server-rendered page produced by `render_dashboard`, which
+delegates to `generate_dashboard_html` in `dashboard_template.py`:
 
-- **Metric cards** — system health (🟢 > 80% success, 🟡 > 50%, 🔴 otherwise), total
-  sessions with active count, completed with success rate, failed with the 24-hour failure
-  rate, 24-hour throughput with the 7-day figure, and average duration (`N/A` when no
-  completed sessions have a usable duration).
+- **Metric cards** — session health (🟢 < 20% of sessions blocked or stale, 🟡 < 50%, 🔴
+  otherwise), total sessions with active count, session creation success rate, finished
+  (terminal) count, blocked (awaiting human input), stale/expired, 24-hour throughput with
+  the 7-day figure, adoption (distinct repositories and branches), average commits per
+  session, and duration (mean with median and p90).
 - **Charts** (Chart.js from a CDN) — a status distribution doughnut, a horizontal bar chart
-  of per-repository success rate, and a line chart of hourly throughput.
-- **Repository breakdown table** — total, active, completed, failed, and success rate per
-  repository, sorted by success rate, with the rate badge coloured green/orange/red at the
-  80%/50% thresholds.
+  of session volume per repository, and a line chart of hourly throughput.
+- **Repository breakdown table** — total, active, blocked, finished, and distinct branches
+  per repository, sorted by session volume.
 - **Auto-refresh** — every 15 seconds the page fetches `/metrics`, calls
   `/poll-status/<session_id>` for each id in `active_sessions`, then reloads itself after a
   one-second delay so the refreshed statuses are shown.
@@ -27,17 +28,24 @@ same aggregation function, `get_session_metrics` in `analytics.py`.
 | Field | Meaning |
 | --- | --- |
 | `total` | Number of session rows in the ledger. |
-| `active` | Sessions with status `created` or `running`. |
-| `completed` | Sessions with status `completed`. |
-| `failed` | Sessions with status `failed`. |
-| `success_rate` | `completed / total` as a fraction (0.0–1.0), `0.0` when empty. |
-| `failure_rate_24h` | Failed sessions created in the last 24 hours divided by all sessions created in that window. |
+| `active` | Sessions in a non-terminal status (`created`, `running`, `blocked`). |
+| `blocked` | Sessions awaiting human input. |
+| `finished` | Sessions with the terminal status `finished`. |
+| `stale` | Sessions with status `expired` or `suspended`. |
+| `creation_success_rate` | `result == "success"` over all rows with a `result`; whether the webhook created the session, not a task verdict. |
+| `creation_attempts` | Rows with a `result` of `success` or `error`. |
 | `by_status` | Count per raw status string. |
-| `by_repository` | Per repository: `total`, `active`, `completed`, `failed`, `success_rate`. |
-| `active_sessions` | Session ids currently `created` or `running`; the dashboard polls these. |
+| `by_repository` | Per repository: `total`, `active`, `blocked`, `finished`, `branches`. |
+| `active_sessions` | Session ids in a non-terminal status; the dashboard polls these. |
+| `distinct_repositories` | Number of repositories seen in the ledger. |
+| `distinct_branches` | Number of distinct repository/branch pairs. |
 | `throughput_24h` | Sessions created in the last 24 hours. |
 | `throughput_last_7_days` | Sessions created in the last 7 days. |
 | `avg_duration_seconds` | Mean `completed_at - created_at` over terminal sessions with parseable, non-negative durations; `0` when none. |
+| `median_duration_seconds` | Median of the same durations. |
+| `p90_duration_seconds` | 90th percentile of the same durations. |
+| `total_commits` | Sum of the `commit_count` column. |
+| `avg_commits_per_session` | `total_commits / total`, `0.0` when empty. |
 | `hourly_throughput` | Sorted `[hour, count]` pairs keyed by the `YYYY-MM-DDTHH` prefix of `created_at`. |
 
 Rates are fractions, not percentages — the dashboard multiplies them by 100 for display.
@@ -46,9 +54,10 @@ Rates are fractions, not percentages — the dashboard multiplies them by 100 fo
 
 `GET` or `POST /poll-status/<session_id>` calls `poll_devin_session_status`, which fetches
 `<DEVIN_API_BASE_URL>/organizations/<DEVIN_ORG_ID>/sessions/<session_id>`, normalizes the
-status to lowercase, derives `result` from the API's `result` or `state` field (defaulting to
-`success` for `completed` and `error` for `failed`), upserts the row via `record_session`
-(which stamps `completed_at` on terminal statuses), and responds with
+status to lowercase, takes `result` from the API's `result` or `state` field (keeping the
+stored creation `result` when the API reports none), upserts the row via `record_session`
+(which stamps `completed_at` on the terminal statuses `finished`, `expired`, `suspended`),
+and responds with
 `{"status": ..., "result": ...}`.
 
 Failure modes: a `requests` error yields `{"status": "unknown", "result": "error", "error":

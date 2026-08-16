@@ -121,7 +121,7 @@ def test_create_devin_session_uses_v3_default_when_base_url_not_set(monkeypatch)
     assert captured["url"] == "https://api.devin.ai/v3/organizations/demo-org/sessions"
 
 
-def test_record_session_metrics_track_active_completed_and_throughput(tmp_path):
+def test_record_session_metrics_track_active_blocked_and_throughput(tmp_path):
     db_path = tmp_path / "metrics.db"
 
     record_session(
@@ -140,7 +140,7 @@ def test_record_session_metrics_track_active_completed_and_throughput(tmp_path):
         branch="main",
         head_commit="def456",
         commit_count=2,
-        status="completed",
+        status="finished",
         result="success",
     )
     record_session(
@@ -150,25 +150,31 @@ def test_record_session_metrics_track_active_completed_and_throughput(tmp_path):
         branch="dev",
         head_commit="ghi789",
         commit_count=1,
-        status="failed",
-        result="error",
+        status="blocked",
+        result="success",
     )
 
     metrics = get_session_metrics(db_path)
 
     assert metrics["total"] == 3
-    assert metrics["active"] == 1
-    assert metrics["completed"] == 1
-    assert metrics["failed"] == 1
+    assert metrics["active"] == 2
+    assert metrics["blocked"] == 1
+    assert metrics["finished"] == 1
+    assert metrics["stale"] == 0
     assert metrics["by_status"]["created"] == 1
-    assert metrics["by_status"]["completed"] == 1
-    assert metrics["by_status"]["failed"] == 1
+    assert metrics["by_status"]["finished"] == 1
+    assert metrics["by_status"]["blocked"] == 1
     assert metrics["throughput_last_7_days"] >= 3
-    assert metrics["success_rate"] == 0.3333333333333333
+    assert metrics["creation_success_rate"] == 1.0
+    assert metrics["distinct_repositories"] == 2
+    assert metrics["distinct_branches"] == 2
+    assert metrics["total_commits"] == 4
     assert metrics["by_repository"]["acme/demo"]["total"] == 2
-    assert metrics["by_repository"]["acme/demo"]["completed"] == 1
-    assert metrics["by_repository"]["acme/other"]["failed"] == 1
+    assert metrics["by_repository"]["acme/demo"]["finished"] == 1
+    assert metrics["by_repository"]["acme/other"]["blocked"] == 1
+    assert metrics["by_repository"]["acme/other"]["branches"] == 1
     assert "sess-1" in metrics["active_sessions"]
+    assert "sess-3" in metrics["active_sessions"]
     assert "sess-2" not in metrics["active_sessions"]
 
 
@@ -182,14 +188,17 @@ def test_dashboard_html_contains_key_overview_and_repo_breakdown(tmp_path):
         branch="main",
         head_commit="abc123",
         commit_count=1,
-        status="completed",
+        status="finished",
         result="success",
     )
 
     html = render_dashboard(db_path)
 
     assert "Devin Session Dashboard" in html
-    assert "Success rate" in html
+    assert "Session Creation" in html
+    assert "Blocked (awaiting input)" in html
+    assert "Avg Commits/Session" in html
+    assert "success_rate" not in html
     assert "Total sessions" in html
     assert "setInterval" in html
     assert "poll-status" in html
@@ -219,7 +228,7 @@ def test_poll_devin_session_status_updates_status_and_result(tmp_path, monkeypat
             return self._payload
 
     def fake_get(url, headers=None, timeout=None):
-        return DummyResponse({"status": "completed", "result": "success"})
+        return DummyResponse({"status": "finished"})
 
     monkeypatch.setenv("DEVIN_API_KEY", "demo-key")
     monkeypatch.setenv("DEVIN_ORG_ID", "demo-org")
@@ -227,8 +236,8 @@ def test_poll_devin_session_status_updates_status_and_result(tmp_path, monkeypat
 
     result = poll_devin_session_status(db_path, "sess-10")
 
-    assert result["status"] == "completed"
-    assert result["result"] == "success"
+    assert result["status"] == "finished"
     metrics = get_session_metrics(db_path)
-    assert metrics["by_status"]["completed"] == 1
-    assert metrics["success_rate"] == 1.0
+    assert metrics["by_status"]["finished"] == 1
+    assert metrics["finished"] == 1
+    assert metrics["avg_duration_seconds"] >= 0
