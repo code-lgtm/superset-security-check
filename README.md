@@ -107,7 +107,21 @@ Cloud Run builds on the same image. It provides the public HTTPS URL and injects
    gcloud builds submit --tag us-central1-docker.pkg.dev/PROJECT_ID/webhooks/superset-security-check
    ```
 
-3. Deploy the service:
+3. Store `WEBHOOK_SECRET` and `DEVIN_API_KEY` in Secret Manager rather than as
+   plaintext service configuration, and grant the service account access:
+
+   ```bash
+   printf '%s' 'your-github-webhook-secret' | gcloud secrets create WEBHOOK_SECRET --data-file=-
+   printf '%s' 'your-devin-api-key' | gcloud secrets create DEVIN_API_KEY --data-file=-
+   for s in WEBHOOK_SECRET DEVIN_API_KEY; do
+     gcloud secrets add-iam-policy-binding "$s" \
+       --member "serviceAccount:PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
+       --role roles/secretmanager.secretAccessor
+   done
+   ```
+
+4. Deploy the service, mounting the secrets and passing only non-sensitive
+   values as env vars:
 
    ```bash
    gcloud run deploy superset-security-check \
@@ -115,25 +129,17 @@ Cloud Run builds on the same image. It provides the public HTTPS URL and injects
      --region us-central1 \
      --platform managed \
      --allow-unauthenticated \
-     --set-env-vars WEBHOOK_SECRET=your-github-webhook-secret,DEVIN_API_KEY=your-devin-api-key,DEVIN_ORG_ID=your-devin-organization-id,DEVIN_PLAYBOOK_ID=your-devin-playbook-id,DEVIN_API_BASE_URL=https://api.devin.ai/v3
+     --set-secrets WEBHOOK_SECRET=WEBHOOK_SECRET:latest,DEVIN_API_KEY=DEVIN_API_KEY:latest \
+     --set-env-vars DEVIN_ORG_ID=your-devin-organization-id,DEVIN_PLAYBOOK_ID=your-devin-playbook-id,DEVIN_API_BASE_URL=https://api.devin.ai/v3
    ```
 
    The command prints the service URL, for example
    `https://superset-security-check-xxxxxxx-uc.a.run.app`. Use that host when
    configuring the GitHub webhook.
 
-4. Prefer Secret Manager over plaintext env vars for `WEBHOOK_SECRET` and
-   `DEVIN_API_KEY`:
-
-   ```bash
-   printf '%s' 'your-devin-api-key' | gcloud secrets create DEVIN_API_KEY --data-file=-
-   gcloud run deploy superset-security-check \
-     --image gcr.io/PROJECT_ID/superset-security-check \
-     --region us-central1 \
-     --allow-unauthenticated \
-     --set-secrets DEVIN_API_KEY=DEVIN_API_KEY:latest,WEBHOOK_SECRET=WEBHOOK_SECRET:latest \
-     --set-env-vars DEVIN_ORG_ID=your-devin-organization-id,DEVIN_PLAYBOOK_ID=your-devin-playbook-id,DEVIN_API_BASE_URL=https://api.devin.ai/v3
-   ```
+   Passing `WEBHOOK_SECRET` or `DEVIN_API_KEY` through `--set-env-vars` instead
+   would store them as plaintext service configuration readable by anyone with
+   `run.services.get`, and leave them in shell history and CI logs.
 
 ### Session ledger persistence
 
