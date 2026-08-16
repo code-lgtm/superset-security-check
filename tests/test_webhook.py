@@ -1,7 +1,9 @@
 import hashlib
 import hmac
+from datetime import datetime, timedelta, timezone
 
 from analytics import (
+    get_db_connection,
     get_session_metrics,
     poll_devin_session_status,
     record_session,
@@ -176,6 +178,33 @@ def test_record_session_metrics_track_active_blocked_and_throughput(tmp_path):
     assert "sess-1" in metrics["active_sessions"]
     assert "sess-3" in metrics["active_sessions"]
     assert "sess-2" not in metrics["active_sessions"]
+
+
+def test_throughput_counts_sqlite_style_timestamps_from_the_previous_day(tmp_path):
+    db_path = tmp_path / "metrics.db"
+    record_session(
+        db_path,
+        session_id="sess-1",
+        repository="acme/demo",
+        branch="main",
+        head_commit="abc123",
+        commit_count=1,
+        status="running",
+    )
+
+    recent = datetime.now(timezone.utc) - timedelta(hours=6)
+    conn = get_db_connection(db_path)
+    conn.execute(
+        "UPDATE sessions SET created_at = ? WHERE session_id = ?",
+        (recent.strftime("%Y-%m-%d %H:%M:%S"), "sess-1"),
+    )
+    conn.commit()
+    conn.close()
+
+    metrics = get_session_metrics(db_path)
+
+    assert metrics["throughput_24h"] == 1
+    assert metrics["throughput_last_7_days"] == 1
 
 
 def test_dashboard_html_contains_key_overview_and_repo_breakdown(tmp_path):

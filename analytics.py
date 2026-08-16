@@ -83,6 +83,18 @@ def _safe_iso(dt_value: str) -> str:
     return dt_value
 
 
+def _parse_utc(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 def _percentile(sorted_values: list[float], fraction: float) -> float:
     if not sorted_values:
         return 0.0
@@ -117,6 +129,7 @@ def get_session_metrics(db_path: str | Path) -> Dict[str, Any]:
     durations = []
     hourly_throughput = {}
     branches = set()
+    created_timestamps = []
     total_commits = 0
     creation_success = 0
     creation_error = 0
@@ -152,31 +165,21 @@ def get_session_metrics(db_path: str | Path) -> Dict[str, Any]:
         repo_entry["branches"] = len(repo_entry["_branches"])
 
         # Calculate session duration
-        if created_at and completed_at and status in TERMINAL_STATUSES:
-            try:
-                # Handle both timezone-aware and naive datetimes
-                created = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                completed_dt = datetime.fromisoformat(completed_at.replace('Z', '+00:00'))
-                
-                # If created is naive, make it aware UTC
-                if created.tzinfo is None:
-                    created = created.replace(tzinfo=timezone.utc)
-                if completed_dt.tzinfo is None:
-                    completed_dt = completed_dt.replace(tzinfo=timezone.utc)
-                    
+        created = _parse_utc(created_at)
+        if created:
+            created_timestamps.append(created)
+
+        if created and status in TERMINAL_STATUSES:
+            completed_dt = _parse_utc(completed_at)
+            if completed_dt:
                 duration_seconds = (completed_dt - created).total_seconds()
                 if duration_seconds >= 0:
                     durations.append(duration_seconds)
-            except (ValueError, AttributeError, TypeError):
-                pass
-        
+
         # Track hourly throughput
         if created_at:
-            try:
-                hour_key = created_at[:13]  # YYYY-MM-DDTHH
-                hourly_throughput[hour_key] = hourly_throughput.get(hour_key, 0) + 1
-            except (ValueError, IndexError):
-                pass
+            hour_key = created_at[:13]  # YYYY-MM-DDTHH
+            hourly_throughput[hour_key] = hourly_throughput.get(hour_key, 0) + 1
 
     for repo_entry in by_repository.values():
         repo_entry.pop("_branches", None)
@@ -190,11 +193,13 @@ def get_session_metrics(db_path: str | Path) -> Dict[str, Any]:
     creation_attempts = creation_success + creation_error
     creation_success_rate = (creation_success / creation_attempts) if creation_attempts else 0.0
 
-    # Throughput metrics
-    cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-    cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-    throughput_24h = sum(1 for row in rows if row[7] >= cutoff_24h)
-    throughput_last_7_days = sum(1 for row in rows if row[7] >= cutoff_7d)
+    # Throughput metrics, compared as datetimes because SQLite's CURRENT_TIMESTAMP
+    # format ("YYYY-MM-DD HH:MM:SS") does not sort against ISO 8601 strings.
+    now = datetime.now(timezone.utc)
+    cutoff_24h = now - timedelta(hours=24)
+    cutoff_7d = now - timedelta(days=7)
+    throughput_24h = sum(1 for created in created_timestamps if created >= cutoff_24h)
+    throughput_last_7_days = sum(1 for created in created_timestamps if created >= cutoff_7d)
 
     # Duration distribution over terminal sessions
     sorted_durations = sorted(durations)
