@@ -200,6 +200,26 @@ curl -X POST http://localhost:5000/webhook/commit \
   --data "$PAYLOAD"
 ```
 
+## Demo deck and narration script
+
+`scripts/generate_deck.py` holds the content for the walkthrough video deck (What / How /
+Why / When) and is the single source for both the slides and the narration in
+[docs/superset-security-check-script.md](docs/superset-security-check-script.md). Edit the
+`DECK` definition in the script, then regenerate:
+
+```bash
+pip install -r requirements-deck.txt
+
+python scripts/generate_deck.py --script-only                       # narration script only
+python scripts/generate_deck.py --pptx build/deck.pptx              # .pptx to import into Slides
+python scripts/generate_deck.py --share-with you@example.com        # native Google Slides file
+```
+
+The native Google Slides path needs credentials with the `presentations` and `drive`
+scopes: set `GOOGLE_APPLICATION_CREDENTIALS` or `GOOGLE_SERVICE_ACCOUNT_JSON` to a
+service-account JSON, or `GOOGLE_OAUTH_CLIENT_SECRETS` / `GOOGLE_OAUTH_TOKEN` for OAuth.
+Every slide carries its narration in the speaker notes with a timing hint.
+
 ## Notes
 
 This is intentionally lightweight and can be adapted for GitHub, GitLab, Bitbucket, or any custom commit webhook provider.
