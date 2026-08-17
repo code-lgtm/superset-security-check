@@ -1,0 +1,7 @@
+# Dependencies for scripts/generate_deck.py.
+# python-pptx is enough for `--pptx`; the Google clients are only needed to create the
+# native Google Slides presentation.
+python-pptx==1.0.2
+google-api-python-client==2.147.0
+google-auth==2.35.0
+google-auth-oauthlib==1.2.1
